@@ -1,0 +1,9 @@
+[[redirects]]
+  from = "/api-proxy/*"
+  to = "https://api-h2h.hudstats.com/:splat"
+  status = 200
+  force = true
+  
+  [redirects.headers]
+    # Se añade un Origin falso por si la API lo exige
+    Origin = "https://h2hggl.com"

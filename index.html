@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lector de Apuestas | e-Basketball</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <div id="app">
+      <header class="glass-header">
+        <h1><span class="neon-text">e-Basketball</span> Live Bets</h1>
+        <div class="status-indicator">
+          <span class="dot pulse"></span>
+          <span>Actualizando datos...</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="controls">
+          <input type="text" id="api-endpoint" placeholder="Endpoint de API (Ej. https://api-h2h.hudstats.com/...)" value="https://api-h2h.hudstats.com/" class="glass-input" />
+          <button id="fetch-btn" class="glow-btn">Cargar Partidos</button>
+        </section>
+
+        <section id="matches-container" class="matches-grid">
+          <!-- Loading State -->
+          <div class="loader-container">
+            <div class="spinner"></div>
+            <p>Esperando conexión...</p>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

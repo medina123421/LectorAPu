@@ -1,0 +1,7 @@
+node_modules
+.DS_Store
+extract.js
+extract.cjs
+search_api.js
+search_endpoints.js
+package-lock.json
