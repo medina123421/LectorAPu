@@ -2,40 +2,72 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lector de Apuestas | e-Basketball</title>
-    <!-- Google Fonts -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Edge Detector | e-Basketball Momios</title>
+    <meta name="description" content="Detecta errores de momios en e-Basketball en tiempo real. Calcula proyecciones y encuentra valor en Over/Under." />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
     <div id="app">
-      <header class="glass-header">
-        <h1><span class="neon-text">e-Basketball</span> Live Bets</h1>
-        <div class="status-indicator">
-          <span class="dot pulse"></span>
-          <span>Actualizando datos...</span>
+
+      <!-- HEADER -->
+      <header class="header">
+        <div class="header-brand">
+          <div class="brand-icon">⚡</div>
+          <div>
+            <h1 class="brand-title">Edge<span class="accent">Detector</span></h1>
+            <p class="brand-sub">e-Basketball · Detector de Errores de Momios</p>
+          </div>
+        </div>
+        <div class="header-right">
+          <div class="live-pill">
+            <span class="dot pulse"></span>
+            <span id="status-text">Conectando...</span>
+          </div>
+          <button id="refresh-btn" class="icon-btn" title="Actualizar">↻</button>
         </div>
       </header>
 
-      <main>
-        <section class="controls">
-          <input type="text" id="api-endpoint" placeholder="Endpoint de API (Ej. https://api-h2h.hudstats.com/...)" value="https://api-h2h.hudstats.com/" class="glass-input" />
-          <button id="fetch-btn" class="glow-btn">Cargar Partidos</button>
-        </section>
+      <!-- STATS BAR -->
+      <div class="stats-bar">
+        <div class="stat-item">
+          <span class="stat-num" id="stat-total">0</span>
+          <span class="stat-label">Partidos</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-num accent" id="stat-live">0</span>
+          <span class="stat-label">En Vivo</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-num success" id="stat-value">0</span>
+          <span class="stat-label">Con Valor</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-num" id="stat-scheduled">0</span>
+          <span class="stat-label">Próximos</span>
+        </div>
+      </div>
 
-        <section id="matches-container" class="matches-grid">
-          <!-- Loading State -->
-          <div class="loader-container">
-            <div class="spinner"></div>
-            <p>Esperando conexión...</p>
-          </div>
-        </section>
+      <!-- LEGEND -->
+      <div class="legend">
+        <div class="legend-item"><span class="badge over">OVER</span> Proyección supera la línea</div>
+        <div class="legend-item"><span class="badge under">UNDER</span> Proyección baja la línea</div>
+        <div class="legend-item"><span class="badge value">⚡ VALOR</span> Edge &gt; 5 pts</div>
+      </div>
+
+      <!-- MATCHES -->
+      <main id="matches-container" class="matches-container">
+        <div class="loader-wrap">
+          <div class="spinner"></div>
+          <p>Cargando partidos en vivo...</p>
+        </div>
       </main>
+
     </div>
+
     <script type="module" src="./main.js"></script>
   </body>
 </html>
