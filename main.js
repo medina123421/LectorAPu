@@ -1,152 +1,200 @@
-// =============================================
-// CONFIG
-// =============================================
-const VALUE_THRESHOLD   = 5;       // Edge mínimo en puntos para considerar "error de momio"
-const AUTO_REFRESH_MS   = 120000;  // Re-chequear cada 2 minutos
-const GAME_DURATION_MIN = 8;       // Duración estimada de un e-basketball en minutos
+// ============================================================
+// EDGE DETECTOR — e-Basketball H2H GG League
+// Módulos: 1-Importar | 2-Líneas | 3-Proyección | 4-Edge
+// ============================================================
 
-const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const proxy = url => isLocal
+// --- CONFIG ---
+const VALUE_THRESHOLD   = 5;
+const AUTO_REFRESH_MS   = 120000;
+const GAME_DURATION_MIN = 8;
+
+const isLocal = ['localhost','127.0.0.1'].includes(window.location.hostname);
+const proxyUrl = url => isLocal
   ? 'https://corsproxy.io/?' + encodeURIComponent(url)
   : '/api-proxy/' + url.replace('https://api-h2h.hudstats.com/', '');
 
-const API_LIVE     = 'https://api-h2h.hudstats.com/v1/live/nba';
-const API_UPCOMING = 'https://api-h2h.hudstats.com/v1/schedule/upcoming/nba';
-const API_H2H      = id => `https://api-h2h.hudstats.com/v1/h2h/nba?external_id=${id}`;
-
-// =============================================
-// ESTADO GLOBAL
-// =============================================
-let currentTab = 'upcoming';
-let allMatches = { live: [], upcoming: [] };
-let statsCache = {};         // externalId → { avgA, avgB, formA, formB }
-let alertedMatches = new Set(JSON.parse(localStorage.getItem('alerted') || '[]'));
-let refreshTimer = null;
-let countdownInterval = null;
-let secondsLeft = AUTO_REFRESH_MS / 1000;
-
-// =============================================
-// MÓDULO 2: ALMACÉN DE LÍNEAS (O/U)
-// =============================================
-const linesStore = {
-  _key: 'edgedetector_lines_v2',
-  get: id => { const d = JSON.parse(localStorage.getItem('edgedetector_lines_v2') || '{}'); return d[id] ?? null; },
-  save: (id, val) => { const d = JSON.parse(localStorage.getItem('edgedetector_lines_v2') || '{}'); d[id] = parseFloat(val); localStorage.setItem('edgedetector_lines_v2', JSON.stringify(d)); }
+const API = {
+  live:     'https://api-h2h.hudstats.com/v1/live/nba',
+  upcoming: 'https://api-h2h.hudstats.com/v1/schedule/upcoming/nba',
+  h2h:      id => `https://api-h2h.hudstats.com/v1/h2h/nba?external_id=${id}`
 };
 
-// =============================================
-// MÓDULO 3: PROYECCIÓN AUTOMÁTICA PRE-PARTIDO
-// Usando promedios históricos de cada jugador
-// =============================================
-function calcAutoProjection(avgA, avgB) {
+// --- ESTADO ---
+let currentTab  = 'upcoming';
+let allMatches  = { live: [], upcoming: [] };
+let statsCache  = {};
+let alertedIds  = new Set(JSON.parse(localStorage.getItem('alerted_v3') || '[]'));
+let countdown   = null;
+
+// ============================================================
+// MÓDULO 2 — ALMACÉN DE LÍNEAS (localStorage)
+// Permite guardar líneas de múltiples casas por partido
+// ============================================================
+const Lines = {
+  _key: 'lines_v3',
+  _load: () => JSON.parse(localStorage.getItem('lines_v3') || '{}'),
+  _save: data => localStorage.setItem('lines_v3', JSON.stringify(data)),
+
+  // Devuelve la mejor línea guardada (la que genera mayor edge absoluto vs proyección)
+  getBest(id, projection) {
+    const d = this._load();
+    const casas = d[id] || {};
+    if (Object.keys(casas).length === 0) return null;
+
+    let best = null;
+    for (const [casa, linea] of Object.entries(casas)) {
+      const edge = projection !== null ? Math.round((projection - linea) * 10) / 10 : null;
+      const abs  = edge !== null ? Math.abs(edge) : -1;
+      if (best === null || abs > best.abs) {
+        best = { casa, linea, edge, abs };
+      }
+    }
+    return best;
+  },
+
+  getAll(id) {
+    const d = this._load();
+    return d[id] || {};
+  },
+
+  set(id, casa, linea) {
+    const d = this._load();
+    if (!d[id]) d[id] = {};
+    d[id][casa] = parseFloat(linea);
+    this._save(d);
+  },
+
+  remove(id, casa) {
+    const d = this._load();
+    if (d[id]) { delete d[id][casa]; this._save(d); }
+  }
+};
+
+// ============================================================
+// MÓDULO 3 — PROYECCIÓN
+// Exactamente la lógica de procesarEdgeEbasketball()
+// ============================================================
+function proyectarPrePartido(avgA, avgB) {
   if (!avgA || !avgB) return null;
-  return Math.round((avgA + avgB) * 10) / 10;
+  return Number((avgA + avgB).toFixed(1));
 }
 
-// Proyección en vivo (por ritmo del partido)
-function calcLiveProjection(match) {
-  const { teamAScore, teamBScore, startDate, status } = match;
+function proyectarEnVivo(match) {
+  const { teamAScore: sA, teamBScore: sB, startDate, status } = match;
   if (status !== 'live') return null;
-  const total = (teamAScore ?? 0) + (teamBScore ?? 0);
+  const total = (sA ?? 0) + (sB ?? 0);
   if (total === 0) return null;
-  const mins = Math.min(Math.max((new Date() - new Date(startDate)) / 60000, 1), GAME_DURATION_MIN);
-  return Math.round((total / mins * GAME_DURATION_MIN) * 10) / 10;
+  const mins = Math.min(Math.max((Date.now() - new Date(startDate)) / 60000, 1), GAME_DURATION_MIN);
+  return Number((total / mins * GAME_DURATION_MIN).toFixed(1));
 }
 
-// =============================================
-// MÓDULO 4: EDGE
-// =============================================
-function calcEdge(projection, line) {
-  if (projection === null || line === null) return null;
-  return Math.round((projection - line) * 10) / 10;
+// ============================================================
+// MÓDULO 4 — PROCESADOR DE EDGE
+// Implementación de procesarEdgeEbasketball() del usuario
+// ============================================================
+function procesarEdgeEbasketball(partidoAPI, lineaCasa, proyeccion) {
+  const local     = `${partidoAPI.teamAName} (${partidoAPI.participantAName})`;
+  const visitante = `${partidoAPI.teamBName} (${partidoAPI.participantBName})`;
+
+  const linea = Number(lineaCasa);
+  const edge  = Number((proyeccion - linea).toFixed(1));
+  const pick  = edge > 0 ? 'Over' : 'Under';
+  const estado = Math.abs(edge) >= VALUE_THRESHOLD ? '⚡ VALOR DETECTADO' : 'Normal';
+
+  return {
+    evento:      `${local} vs ${visitante}`,
+    linea_api:   linea,
+    proyeccion,
+    edge:        edge > 0 ? `+${edge}` : `${edge}`,
+    edge_num:    edge,
+    pick,
+    estado,
+    es_valor:    Math.abs(edge) >= VALUE_THRESHOLD
+  };
 }
 
-// =============================================
+// ============================================================
 // NOTIFICACIONES
-// =============================================
-function requestNotifications() {
+// ============================================================
+function solicitarNotif() {
   if (!('Notification' in window)) return;
-  Notification.requestPermission().then(perm => {
-    updateNotifBtn(perm === 'granted');
-    hideBanner();
-  });
+  Notification.requestPermission().then(p => actualizarBtnNotif(p === 'granted'));
 }
 
-function updateNotifBtn(granted) {
+function actualizarBtnNotif(ok) {
   const btn = document.getElementById('notif-btn');
-  if (granted) { btn.classList.add('active'); btn.title = 'Alertas activadas'; }
-  else { btn.classList.remove('active'); btn.title = 'Activar alertas'; }
+  btn.style.borderColor = ok ? 'var(--accent)' : '';
+  btn.style.color       = ok ? 'var(--accent-light)' : '';
+  btn.title = ok ? '🔔 Alertas activas' : 'Activar alertas';
 }
 
-function hideBanner() { document.getElementById('notif-banner').classList.add('hidden'); }
+function dispararAlerta(match, resultado) {
+  const id = match.externalId + '_' + resultado.linea_api;
+  if (alertedIds.has(id)) return;
+  alertedIds.add(id);
+  localStorage.setItem('alerted_v3', JSON.stringify([...alertedIds]));
 
-function fireNotification(match, edge, pick) {
-  const id = match.externalId;
-  if (alertedMatches.has(id)) return;
-  alertedMatches.add(id);
-  localStorage.setItem('alerted', JSON.stringify([...alertedMatches]));
-
-  const title = '🚨 Error de Momio Detectado';
-  const body = `${match.participantAName} vs ${match.participantBName}\n${pick} | Edge: ${edge > 0 ? '+' : ''}${edge} pts\n${match.streamName} — ${formatTime(match.startDate)}`;
-
-  // Notificación del browser
+  // Notificación push
   if (Notification.permission === 'granted') {
-    new Notification(title, { body, icon: '/favicon.ico', badge: '/favicon.ico', vibrate: [200, 100, 200] });
+    new Notification('🚨 Hay un movimiento de línea — Error detectado', {
+      body: `${match.participantAName} vs ${match.participantBName}\n${resultado.pick} ${resultado.linea_api} | Edge ${resultado.edge} pts\n${match.streamName}`,
+      icon: '/favicon.ico'
+    });
   }
 
-  // Log de alertas en pantalla
-  addAlertToLog(match, edge, pick);
+  // Log en pantalla
+  agregarAlLog(match, resultado);
 }
 
-function addAlertToLog(match, edge, pick) {
-  const log = document.getElementById('alert-log');
+function agregarAlLog(match, resultado) {
+  const log  = document.getElementById('alert-log');
   const body = document.getElementById('alert-log-body');
   log.classList.remove('hidden');
 
   const item = document.createElement('div');
   item.className = 'alert-item';
+  const now = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
   item.innerHTML = `
-    <span>🚨 <strong>${match.participantAName} vs ${match.participantBName}</strong> — ${pick} | Edge <strong>${edge > 0 ? '+' : ''}${edge}</strong></span>
-    <span class="alert-time">${formatTime(new Date().toISOString())}</span>
+    <div class="alert-content">
+      <span class="alert-title">🚨 <strong>${match.participantAName} vs ${match.participantBName}</strong></span>
+      <span class="alert-detail">${resultado.pick} ${resultado.linea_api} &nbsp;|&nbsp; Edge <strong style="color:${resultado.edge_num > 0 ? 'var(--over)' : 'var(--under)'}">${resultado.edge}</strong> &nbsp;|&nbsp; ${resultado.estado}</span>
+    </div>
+    <span class="alert-time">${now}</span>
   `;
   body.insertBefore(item, body.firstChild);
 }
 
-// =============================================
-// MÓDULO 1: FETCH DE PARTIDOS Y STATS
-// =============================================
-async function fetchAll() {
-  const [liveData, upcomingData] = await Promise.all([
-    fetch(proxy(API_LIVE)).then(r => r.json()),
-    fetch(proxy(API_UPCOMING)).then(r => r.json())
+// ============================================================
+// MÓDULO 1 — IMPORTAR PARTIDOS + STATS
+// ============================================================
+async function fetchTodo() {
+  const [liveRaw, upcomingRaw] = await Promise.all([
+    fetch(proxyUrl(API.live)).then(r => r.json()),
+    fetch(proxyUrl(API.upcoming)).then(r => r.json())
   ]);
 
-  const live     = Array.isArray(liveData)     ? liveData     : [];
-  const upcoming = Array.isArray(upcomingData) ? upcomingData : [];
+  const live     = Array.isArray(liveRaw)     ? liveRaw     : [];
+  const upcoming = Array.isArray(upcomingRaw) ? upcomingRaw : [];
 
-  // Combinar para stats fetch — priorizar partidos próximos + en vivo
-  const allIds = [...live, ...upcoming].map(m => m.externalId);
-  const toFetch = allIds.filter(id => !statsCache[id]);
+  // Fetch stats solo de los que no están en caché
+  const sinCache = [...live, ...upcoming]
+    .map(m => m.externalId)
+    .filter(id => !statsCache[id]);
 
-  // Fetch stats en paralelo (máx 8 a la vez para no sobrecargar)
-  const chunks = [];
-  for (let i = 0; i < toFetch.length; i += 8) chunks.push(toFetch.slice(i, i + 8));
-
-  for (const chunk of chunks) {
-    await Promise.all(chunk.map(async id => {
+  // Chunks de 6 para no sobrecargar
+  for (let i = 0; i < sinCache.length; i += 6) {
+    await Promise.all(sinCache.slice(i, i + 6).map(async id => {
       try {
-        const data = await fetch(proxy(API_H2H(id))).then(r => r.json());
+        const data = await fetch(proxyUrl(API.h2h(id))).then(r => r.json());
         const sA = data.participantAStats;
         const sB = data.participantBStats;
         statsCache[id] = {
-          avgA: sA?.avgPoints ?? null,
-          avgB: sB?.avgPoints ?? null,
-          formA: sA?.matchForm?.slice(0, 5) ?? [],
-          formB: sB?.matchForm?.slice(0, 5) ?? [],
-          matchesA: sA?.matchesPlayed ?? 0,
-          matchesB: sB?.matchesPlayed ?? 0,
-          winPctA: sA?.matchesWinPct ?? null,
-          winPctB: sB?.matchesWinPct ?? null,
+          avgA:     sA?.avgPoints    ?? null,
+          avgB:     sB?.avgPoints    ?? null,
+          winPctA:  sA?.matchesWinPct ?? null,
+          winPctB:  sB?.matchesWinPct ?? null,
+          formA:    sA?.matchForm?.slice(0, 5) ?? [],
+          formB:    sB?.matchForm?.slice(0, 5) ?? [],
         };
       } catch { statsCache[id] = null; }
     }));
@@ -155,339 +203,340 @@ async function fetchAll() {
   return { live, upcoming };
 }
 
-// =============================================
-// UI: RENDER TARJETA
-// =============================================
+// ============================================================
+// UI — RENDERIZAR TARJETA
+// ============================================================
 function renderCard(match, isLive = false) {
-  const { externalId, streamName, status, teamAName, teamBName,
-          participantAName, participantBName, startDate,
-          teamAScore, teamBScore } = match;
+  const {
+    externalId, streamName, startDate,
+    teamAName, teamBName, participantAName, participantBName,
+    teamAScore, teamBScore
+  } = match;
 
   const stats = statsCache[externalId];
-  const avgA = stats?.avgA ?? null;
-  const avgB = stats?.avgB ?? null;
-  const formA = stats?.formA ?? [];
-  const formB = stats?.formB ?? [];
+  const avgA  = stats?.avgA ?? null;
+  const avgB  = stats?.avgB ?? null;
 
-  // Proyección: en vivo usa ritmo actual, pre-partido usa histórico
-  const projection = isLive
-    ? calcLiveProjection(match)
-    : calcAutoProjection(avgA, avgB);
+  // MÓDULO 3: proyección
+  const proyeccion = isLive
+    ? proyectarEnVivo(match)
+    : proyectarPrePartido(avgA, avgB);
 
-  const savedLine = linesStore.get(externalId);
-  const edge = calcEdge(projection, savedLine);
-  const hasValue = edge !== null && Math.abs(edge) >= VALUE_THRESHOLD;
-  const isOver = edge !== null && edge > 0;
+  // MÓDULO 2: líneas guardadas
+  const todasLineas = Lines.getAll(externalId);
+  const mejorLinea  = Lines.getBest(externalId, proyeccion);
 
-  // Auto-notificar si hay valor y el partido es próximo o en vivo
-  if (hasValue && savedLine !== null) {
-    fireNotification(match, edge, isOver ? `▲ OVER ${savedLine}` : `▼ UNDER ${savedLine}`);
+  // MÓDULO 4: resultado del procesador
+  let resultado = null;
+  if (mejorLinea && proyeccion !== null) {
+    resultado = procesarEdgeEbasketball(match, mejorLinea.linea, proyeccion);
+    if (resultado.es_valor) dispararAlerta(match, resultado);
   }
 
-  // Clases de la tarjeta
-  let cardClass = 'match-card';
-  if (hasValue && savedLine !== null) cardClass += isOver ? ' has-over-value' : ' has-under-value';
+  // Minutos al partido
+  const minsUntil = Math.round((new Date(startDate) - Date.now()) / 60000);
+  const badgeText  = isLive ? '🔴 LIVE'
+    : minsUntil >= 0 && minsUntil <= 20 ? `⏰ ${minsUntil}m`
+    : fmt.time(startDate);
+  const badgeClass = isLive ? 'live' : minsUntil >= 0 && minsUntil <= 20 ? 'soon' : 'sched';
 
-  // Minutos para el partido
-  const minsUntil = Math.round((new Date(startDate) - new Date()) / 60000);
-  const badgeText = isLive
-    ? '🔴 LIVE'
-    : minsUntil <= 15 && minsUntil >= 0
-      ? `⏰ ${minsUntil}m`
-      : formatTime(startDate);
-  const badgeClass = isLive ? 'live' : minsUntil <= 15 && minsUntil >= 0 ? 'soon' : 'scheduled';
-
-  // Edge visuals
-  const edgeClass = edge === null ? 'muted' : edge > 0 ? 'edge-pos' : 'edge-neg';
-  const edgeText = edge === null ? '—' : `${edge > 0 ? '+' : ''}${edge}`;
-
-  // Pick
-  let pickMainText = '—', pickMainClass = 'neutral', pickSubText = 'Ingresa la línea de tu casa de apuestas';
-  if (savedLine !== null && projection !== null) {
-    pickMainText = isOver ? `▲ OVER ${savedLine}` : `▼ UNDER ${savedLine}`;
-    pickMainClass = isOver ? 'over' : 'under';
-    pickSubText = `Proyección ${projection} | Edge ${edgeText} pts`;
-  } else if (projection !== null) {
-    pickSubText = `Proyección auto: ${projection} pts — Ingresa la línea`;
+  // Card border
+  let cardBorder = '';
+  if (resultado?.es_valor) {
+    cardBorder = resultado.edge_num > 0 ? 'border-over' : 'border-under';
   }
-
-  // Pick box class
-  let pickBoxClass = 'pick-box';
-  if (savedLine !== null && projection !== null) {
-    if (hasValue) pickBoxClass += isOver ? ' pick-value-over' : ' pick-value-under';
-    else pickBoxClass += isOver ? ' pick-over' : ' pick-under';
-  }
-
-  // Value pill
-  let pillHtml = '';
-  if (savedLine === null) {
-    pillHtml = `<span class="value-pill waiting">Sin línea</span>`;
-  } else if (!hasValue) {
-    pillHtml = `<span class="value-pill ok">✓ Línea OK</span>`;
-  } else {
-    const emoji = isOver ? '📈' : '📉';
-    pillHtml = `<span class="value-pill ${isOver ? 'detected-over' : 'detected-under'}">${emoji} Error detectado</span>`;
-  }
-
-  // Forma
-  const renderForm = (form, label) => form.length === 0 ? '' : `
-    <div class="form-bar">
-      <span class="form-label">${label}</span>
-      ${form.map(r => `<span class="form-dot ${r}">${r}</span>`).join('')}
-    </div>
-  `;
 
   const card = document.createElement('div');
-  card.className = cardClass;
+  card.className = `match-card ${cardBorder}`;
   card.dataset.id = externalId;
 
   card.innerHTML = `
-    <div class="card-stripe"></div>
+    <div class="card-top-bar ${resultado?.es_valor ? (resultado.edge_num > 0 ? 'bar-over' : 'bar-under') : ''}"></div>
+
+    <!-- CABECERA -->
     <div class="card-header">
-      <span class="stream-name">${streamName}</span>
-      <div class="card-header-right">
-        <span class="start-time">${isLive ? '' : formatDate(startDate)}</span>
+      <span class="stream-label">${streamName}</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="time-label">${isLive ? '' : fmt.date(startDate)}</span>
         <span class="badge ${badgeClass}">${badgeText}</span>
       </div>
     </div>
 
     <div class="card-body">
-      <!-- EQUIPOS -->
-      <div class="teams-section">
-        <div class="team-block left">
-          <span class="player-name">${participantAName}</span>
-          <span class="team-name-sm">${teamAName}</span>
-          ${avgA !== null ? `<span class="avg-pts">~${avgA} pts/partido</span>` : ''}
-          ${renderForm(formA, 'Forma')}
-        </div>
 
-        <div class="vs-center">
+      <!-- EQUIPOS -->
+      <div class="matchup">
+        <div class="team-col">
+          <span class="gamer">${participantAName}</span>
+          <span class="team-sm">${teamAName}</span>
+          ${avgA ? `<span class="avg">~${avgA} pts/p</span>` : ''}
+          ${renderForm(stats?.formA ?? [])}
+        </div>
+        <div class="center-col">
           ${isLive && teamAScore !== null
-            ? `<span class="score-live">${teamAScore} - ${teamBScore}</span>`
-            : `<span class="vs-text">VS</span><span class="vs-time">${formatTime(startDate)}</span>`
+            ? `<span class="score-live">${teamAScore}<span class="score-sep"> - </span>${teamBScore}</span>
+               <span class="score-total">Total: ${(teamAScore??0)+(teamBScore??0)}</span>`
+            : `<span class="vs">VS</span>`
           }
         </div>
-
-        <div class="team-block right">
-          <span class="player-name">${participantBName}</span>
-          <span class="team-name-sm">${teamBName}</span>
-          ${avgB !== null ? `<span class="avg-pts">~${avgB} pts/partido</span>` : ''}
-          ${renderForm(formB, '')}
+        <div class="team-col right">
+          <span class="gamer">${participantBName}</span>
+          <span class="team-sm">${teamBName}</span>
+          ${avgB ? `<span class="avg">~${avgB} pts/p</span>` : ''}
+          ${renderForm(stats?.formB ?? [])}
         </div>
       </div>
 
-      <!-- ANÁLISIS -->
-      <div class="analysis-grid">
-        <div class="analysis-box">
-          <div class="abox-label"><span class="abox-num">3</span> Proyección Auto</div>
-          <div class="abox-value proj">${projection !== null ? `${projection} pts` : '—'}</div>
+      <!-- MÓDULO 3 + 4: Proyección y Edge -->
+      <div class="mod-grid">
+        <div class="mod-box">
+          <span class="mod-label">📊 Proyección (Mód.3)</span>
+          <span class="mod-val proj">${proyeccion !== null ? `${proyeccion} pts` : '—'}</span>
+          <span class="mod-hint">${avgA && avgB ? `${avgA} + ${avgB}` : 'Sin datos'}</span>
         </div>
-        <div class="analysis-box">
-          <div class="abox-label"><span class="abox-num">4</span> Edge</div>
-          <div class="abox-value ${edgeClass}">${edgeText}${edge !== null ? ' pts' : ''}</div>
+        <div class="mod-box">
+          <span class="mod-label">🎯 Mejor Edge (Mód.4)</span>
+          <span class="mod-val ${resultado ? (resultado.edge_num > 0 ? 'edge-pos' : 'edge-neg') : 'edge-nil'}">
+            ${resultado ? resultado.edge + ' pts' : '—'}
+          </span>
+          <span class="mod-hint">${resultado ? resultado.pick : 'Sin línea'}</span>
         </div>
       </div>
 
-      <!-- LÍNEA O/U -->
-      <div class="line-row">
-        <input
-          type="number"
-          class="line-input"
-          id="line-${externalId}"
-          placeholder="Línea O/U (ej. 168.5)"
-          value="${savedLine !== null ? savedLine : ''}"
-          step="0.5" min="50"
-        />
-        <button class="calc-btn" data-id="${externalId}">Analizar</button>
+      <!-- MÓDULO 2: INGRESAR LÍNEA(S) -->
+      <div class="lines-section">
+        <div class="lines-header">
+          <span class="mod-label">💰 Líneas O/U por Casa (Mód.2)</span>
+        </div>
+
+        <!-- Líneas guardadas -->
+        <div class="saved-lines" id="saved-${externalId}">
+          ${renderSavedLines(externalId, todasLineas, proyeccion)}
+        </div>
+
+        <!-- Agregar nueva línea -->
+        <div class="add-line-row">
+          <input
+            type="text"
+            class="casa-input"
+            id="casa-${externalId}"
+            placeholder="Casa (ej. Betway)"
+          />
+          <input
+            type="number"
+            class="line-input"
+            id="linea-${externalId}"
+            placeholder="O/U (ej. 168.5)"
+            step="0.5" min="50"
+          />
+          <button class="add-btn" data-id="${externalId}">+</button>
+        </div>
       </div>
 
-      <!-- PICK & ESTADO -->
-      <div class="${pickBoxClass}">
-        <div class="pick-left">
-          <span class="pick-main ${pickMainClass}">${pickMainText}</span>
-          <span class="pick-sub">${pickSubText}</span>
+      <!-- PICK FINAL -->
+      <div class="pick-final ${resultado ? (resultado.es_valor ? (resultado.edge_num > 0 ? 'pf-over-value' : 'pf-under-value') : (resultado.edge_num > 0 ? 'pf-over' : 'pf-under')) : 'pf-empty'}">
+        <div class="pf-left">
+          <span class="pf-pick ${resultado ? (resultado.edge_num > 0 ? 'over' : 'under') : 'nil'}">
+            ${resultado
+              ? `${resultado.edge_num > 0 ? '▲' : '▼'} ${resultado.pick} ${resultado.linea_api}`
+              : '— Ingresa línea para calcular'}
+          </span>
+          <span class="pf-detail">
+            ${resultado ? resultado.evento.split(' vs ')[0] + ' vs ' + resultado.evento.split(' vs ')[1] : ''}
+          </span>
         </div>
-        ${pillHtml}
+        <span class="estado-pill ${resultado?.es_valor ? 'ep-valor' : resultado ? 'ep-ok' : 'ep-wait'}">
+          ${resultado?.es_valor ? '⚡ VALOR DETECTADO' : resultado ? '✓ Normal' : 'Sin línea'}
+        </span>
       </div>
 
     </div>
   `;
 
-  // Evento Analizar
-  const btn = card.querySelector('.calc-btn');
-  const input = card.querySelector(`#line-${externalId}`);
+  // Evento: agregar línea
+  card.querySelector('.add-btn').addEventListener('click', () => {
+    const casaEl  = card.querySelector(`#casa-${externalId}`);
+    const lineaEl = card.querySelector(`#linea-${externalId}`);
+    const casa    = casaEl.value.trim() || 'Sin nombre';
+    const linea   = parseFloat(lineaEl.value);
 
-  const doCalc = () => {
-    const val = parseFloat(input.value);
-    if (isNaN(val) || val <= 0) {
-      input.style.borderColor = 'var(--danger)';
-      setTimeout(() => input.style.borderColor = '', 1200);
+    if (isNaN(linea) || linea <= 0) {
+      lineaEl.style.borderColor = 'var(--danger)';
+      setTimeout(() => lineaEl.style.borderColor = '', 1200);
       return;
     }
-    linesStore.save(externalId, val);
-    // Resetear el alerted para que pueda re-notificar si hay valor
-    alertedMatches.delete(externalId);
-    localStorage.setItem('alerted', JSON.stringify([...alertedMatches]));
-    const newCard = renderCard(match, isLive);
-    card.replaceWith(newCard);
-    updateStats();
-  };
 
-  btn.addEventListener('click', doCalc);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') doCalc(); });
+    Lines.set(externalId, casa, linea);
+    alertedIds.delete(externalId + '_' + linea);
+    localStorage.setItem('alerted_v3', JSON.stringify([...alertedIds]));
+
+    casaEl.value = '';
+    lineaEl.value = '';
+    card.replaceWith(renderCard(match, isLive));
+    updateStatsBar();
+  });
+
+  // Enter en linea-input
+  card.querySelector(`#linea-${externalId}`).addEventListener('keydown', e => {
+    if (e.key === 'Enter') card.querySelector('.add-btn').click();
+  });
 
   return card;
 }
 
-// =============================================
-// UI: STATS BAR
-// =============================================
-function updateStats() {
-  const live = allMatches.live;
-  const upcoming = allMatches.upcoming;
-  const all = [...live, ...upcoming];
+// Renderiza las filas de líneas guardadas con su edge individual
+function renderSavedLines(id, casas, proyeccion) {
+  if (Object.keys(casas).length === 0) return '<span class="no-lines">Ninguna línea guardada aún</span>';
 
-  const withValue = all.filter(m => {
-    const s = statsCache[m.externalId];
-    const proj = m.status === 'live'
-      ? calcLiveProjection(m)
-      : calcAutoProjection(s?.avgA, s?.avgB);
-    const line = linesStore.get(m.externalId);
-    const edge = calcEdge(proj, line);
-    return edge !== null && Math.abs(edge) >= VALUE_THRESHOLD;
-  });
+  return Object.entries(casas).map(([casa, linea]) => {
+    const edge = proyeccion !== null ? Number((proyeccion - linea).toFixed(1)) : null;
+    const edgeStr = edge !== null ? (edge > 0 ? `+${edge}` : `${edge}`) : '—';
+    const esValor = edge !== null && Math.abs(edge) >= VALUE_THRESHOLD;
+    const color   = edge === null ? 'var(--text-muted)' : edge > 0 ? 'var(--over)' : 'var(--under)';
 
-  document.getElementById('stat-total').textContent = upcoming.length;
-  document.getElementById('stat-live').textContent   = live.length;
-  document.getElementById('stat-value').textContent  = withValue.length;
-  document.getElementById('stat-checked').textContent = all.filter(m => linesStore.get(m.externalId) !== null).length;
+    return `
+      <div class="saved-line-row">
+        <span class="sl-casa">${casa}</span>
+        <span class="sl-linea">${linea}</span>
+        <span class="sl-edge" style="color:${color}">${edgeStr}</span>
+        ${esValor ? '<span class="sl-valor">⚡</span>' : '<span></span>'}
+        <button class="sl-del" data-id="${id}" data-casa="${casa}">✕</button>
+      </div>
+    `;
+  }).join('');
 }
 
-// =============================================
-// UI: RENDERIZAR TAB ACTUAL
-// =============================================
-function renderCurrentTab() {
+function renderForm(form) {
+  if (!form || form.length === 0) return '';
+  return `<div class="form-row">${form.map(r => `<span class="fd ${r}">${r.toUpperCase()}</span>`).join('')}</div>`;
+}
+
+// ============================================================
+// UI — STATS BAR
+// ============================================================
+function updateStatsBar() {
+  const all = [...allMatches.live, ...allMatches.upcoming];
+  let errores = 0, analizados = 0;
+
+  all.forEach(m => {
+    const s  = statsCache[m.externalId];
+    const pj = m.status === 'live' ? proyectarEnVivo(m) : proyectarPrePartido(s?.avgA, s?.avgB);
+    const lm = Lines.getBest(m.externalId, pj);
+    if (lm) {
+      analizados++;
+      if (lm.abs >= VALUE_THRESHOLD) errores++;
+    }
+  });
+
+  document.getElementById('stat-upcoming').textContent  = allMatches.upcoming.length;
+  document.getElementById('stat-live').textContent      = allMatches.live.length;
+  document.getElementById('stat-errors').textContent    = errores;
+  document.getElementById('stat-analyzed').textContent  = analizados;
+}
+
+// ============================================================
+// UI — RENDER TAB
+// ============================================================
+function renderTab() {
   const container = document.getElementById('matches-container');
-  const matches = currentTab === 'live' ? allMatches.live : allMatches.upcoming;
-  const isLive = currentTab === 'live';
+  const matches   = currentTab === 'live' ? allMatches.live : allMatches.upcoming;
+  const isLive    = currentTab === 'live';
 
   container.innerHTML = '';
-
   if (matches.length === 0) {
-    container.innerHTML = `<div class="empty-state">No hay partidos ${isLive ? 'en vivo' : 'próximos'} en este momento.</div>`;
+    container.innerHTML = `<div class="empty-state">No hay partidos ${isLive ? 'en vivo' : 'próximos'} ahora.</div>`;
     return;
   }
 
-  matches.forEach(m => container.appendChild(renderCard(m, isLive)));
-  updateStats();
+  matches.forEach(m => {
+    const card = renderCard(m, isLive);
+    // Delegación: borrar línea guardada
+    card.querySelectorAll('.sl-del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        Lines.remove(btn.dataset.id, btn.dataset.casa);
+        card.replaceWith(renderCard(m, isLive));
+        updateStatsBar();
+      });
+    });
+    container.appendChild(card);
+  });
+
+  updateStatsBar();
 }
 
-// =============================================
-// MAIN FETCH LOOP
-// =============================================
+// ============================================================
+// MAIN REFRESH
+// ============================================================
 async function refresh() {
   const statusText = document.getElementById('status-text');
   const dot        = document.getElementById('status-dot');
-  const refreshBtn = document.getElementById('refresh-btn');
+  const btn        = document.getElementById('refresh-btn');
 
-  refreshBtn.classList.add('spinning');
+  btn.classList.add('spinning');
   statusText.textContent = 'Actualizando...';
 
   try {
-    const { live, upcoming } = await fetchAll();
-    allMatches.live     = live;
-    allMatches.upcoming = upcoming;
-
-    renderCurrentTab();
-
+    const { live, upcoming } = await fetchTodo();
+    allMatches = { live, upcoming };
+    renderTab();
     dot.className = 'dot pulse';
-    statusText.textContent = `Actualizado ${formatTime(new Date().toISOString())}`;
-    startCountdown();
-
+    statusText.textContent = `Actualizado ${fmt.time(new Date())}`;
+    iniciarCountdown();
   } catch (err) {
-    console.error(err);
     dot.className = 'dot error';
     statusText.textContent = 'Error de conexión';
     document.getElementById('matches-container').innerHTML = `
       <div class="error-card">
-        No se pudo conectar con la API.<br><br>
-        ${err.message}<br><br>
-        ${isLocal ? 'Activa la extensión CORS Unblocker en tu navegador o sube la app a Netlify.' : 'Intenta de nuevo en un momento.'}
-      </div>
-    `;
+        <strong>No se pudo conectar</strong><br><br>${err.message}<br><br>
+        ${isLocal ? 'Activa CORS Unblocker o sube la app a Netlify.' : 'Intenta de nuevo.'}
+      </div>`;
   } finally {
-    refreshBtn.classList.remove('spinning');
+    btn.classList.remove('spinning');
   }
 }
 
-// =============================================
-// COUNTDOWN
-// =============================================
-function startCountdown() {
-  clearInterval(countdownInterval);
-  secondsLeft = AUTO_REFRESH_MS / 1000;
+function iniciarCountdown() {
+  clearInterval(countdown);
+  let seg = AUTO_REFRESH_MS / 1000;
   const el = document.getElementById('next-refresh');
-  countdownInterval = setInterval(() => {
-    secondsLeft--;
-    if (secondsLeft <= 0) {
-      clearInterval(countdownInterval);
-      el.textContent = '';
-      refresh();
-    } else {
-      el.textContent = `· próximo en ${secondsLeft}s`;
-    }
+  countdown = setInterval(() => {
+    seg--;
+    if (seg <= 0) { clearInterval(countdown); el.textContent = ''; refresh(); }
+    else el.textContent = `· refresca en ${seg}s`;
   }, 1000);
 }
 
-// =============================================
-// HELPERS
-// =============================================
-function formatTime(dateStr) {
-  return new Date(dateStr).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
-}
-function formatDate(dateStr) {
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('es-MX', { weekday: 'short', month: 'short', day: 'numeric' });
-}
+// ============================================================
+// HELPERS FORMATO
+// ============================================================
+const fmt = {
+  time: d  => new Date(d).toLocaleTimeString('es-MX',  { hour: '2-digit', minute: '2-digit' }),
+  date: d  => new Date(d).toLocaleDateString('es-MX',  { weekday: 'short', day: 'numeric', month: 'short' })
+};
 
-// =============================================
+// ============================================================
 // INIT
-// =============================================
+// ============================================================
 document.addEventListener('DOMContentLoaded', () => {
-  // Notificaciones
-  const notifBtn = document.getElementById('notif-btn');
   if ('Notification' in window) {
-    updateNotifBtn(Notification.permission === 'granted');
-    if (Notification.permission === 'default') {
-      document.getElementById('notif-banner').classList.remove('hidden');
-    }
+    actualizarBtnNotif(Notification.permission === 'granted');
   }
-  notifBtn.addEventListener('click', requestNotifications);
-  document.getElementById('notif-allow-btn').addEventListener('click', requestNotifications);
-  document.getElementById('notif-dismiss-btn').addEventListener('click', hideBanner);
 
-  // Clear alerts log
+  document.getElementById('notif-btn').addEventListener('click', solicitarNotif);
+  document.getElementById('refresh-btn').addEventListener('click', () => { clearInterval(countdown); refresh(); });
   document.getElementById('clear-alerts').addEventListener('click', () => {
     document.getElementById('alert-log-body').innerHTML = '';
     document.getElementById('alert-log').classList.add('hidden');
   });
 
-  // Tabs
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      currentTab = tab.dataset.tab;
-      renderCurrentTab();
+  document.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      currentTab = t.dataset.tab;
+      renderTab();
     });
   });
 
-  // Refresh manual
-  document.getElementById('refresh-btn').addEventListener('click', () => {
-    clearInterval(countdownInterval);
-    refresh();
-  });
-
-  // Primer fetch
   refresh();
 });

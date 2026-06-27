@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Edge Detector | e-Basketball Momios</title>
-    <meta name="description" content="Detecta errores de momios en e-Basketball antes del partido. Proyección automática y alertas en tiempo real." />
+    <meta name="description" content="Detecta errores de momios en e-Basketball. Proyección automática y alertas en tiempo real." />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800;900&display=swap" rel="stylesheet">
@@ -13,25 +13,23 @@
   <body>
     <div id="app">
 
-      <!-- HEADER -->
       <header class="header">
         <div class="header-brand">
           <div class="brand-icon">⚡</div>
           <div>
             <h1 class="brand-title">Edge<span class="accent">Detector</span></h1>
-            <p class="brand-sub">e-Basketball · Detección Pre-Partido</p>
+            <p class="brand-sub">e-Basketball H2H GG League</p>
           </div>
         </div>
         <div class="header-right">
-          <button id="notif-btn" class="notif-btn" title="Activar alertas">🔔</button>
+          <button id="notif-btn" class="icon-btn" title="Activar alertas">🔔</button>
           <button id="refresh-btn" class="icon-btn" title="Actualizar">↻</button>
         </div>
       </header>
 
-      <!-- STATS BAR -->
       <div class="stats-bar">
         <div class="stat-item">
-          <span class="stat-num" id="stat-total">0</span>
+          <span class="stat-num" id="stat-upcoming">0</span>
           <span class="stat-label">Próximos</span>
         </div>
         <div class="stat-item">
@@ -39,39 +37,30 @@
           <span class="stat-label">En Vivo</span>
         </div>
         <div class="stat-item">
-          <span class="stat-num success" id="stat-value">0</span>
+          <span class="stat-num danger" id="stat-errors">0</span>
           <span class="stat-label">⚡ Errores</span>
         </div>
         <div class="stat-item">
-          <span class="stat-num" id="stat-checked">0</span>
+          <span class="stat-num muted" id="stat-analyzed">0</span>
           <span class="stat-label">Analizados</span>
         </div>
       </div>
 
-      <!-- NOTIFICATION BANNER -->
-      <div id="notif-banner" class="notif-banner hidden">
-        <span>🔔</span>
-        <span id="notif-banner-text">Activa las notificaciones para recibir alertas de errores de momios</span>
-        <button id="notif-allow-btn" class="notif-allow-btn">Activar</button>
-        <button id="notif-dismiss-btn" class="notif-dismiss-btn">✕</button>
-      </div>
-
-      <!-- ALERT LOG -->
+      <!-- Alert log -->
       <div id="alert-log" class="alert-log hidden">
         <div class="alert-log-header">
-          <span>🚨 Alertas Recientes</span>
+          <span>🚨 Movimientos de Línea Detectados</span>
           <button id="clear-alerts" class="clear-btn">Limpiar</button>
         </div>
         <div id="alert-log-body"></div>
       </div>
 
-      <!-- TABS -->
+      <!-- Tabs -->
       <div class="tabs">
         <button class="tab active" data-tab="upcoming">📅 Próximos</button>
         <button class="tab" data-tab="live">🔴 En Vivo</button>
       </div>
 
-      <!-- MATCHES -->
       <main id="matches-container" class="matches-container">
         <div class="loader-wrap">
           <div class="spinner"></div>
@@ -79,7 +68,6 @@
         </div>
       </main>
 
-      <!-- STATUS BAR BOTTOM -->
       <div class="status-bar">
         <span class="dot pulse" id="status-dot"></span>
         <span id="status-text">Iniciando...</span>
@@ -87,7 +75,6 @@
       </div>
 
     </div>
-
     <script type="module" src="./main.js"></script>
   </body>
 </html>
