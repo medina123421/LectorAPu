@@ -272,3 +272,6 @@ body {
   .alert-log { margin-left: 24px; margin-right: 24px; }
   .card-body { padding: 14px 16px; }
 }
+
+.sync-status { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.05); display: inline-block; }
+.sync-active { color: #10b981; background: rgba(16,185,129,0.1); }

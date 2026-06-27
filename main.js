@@ -19,12 +19,30 @@ const API = {
   h2h:      id => `https://api-h2h.hudstats.com/v1/h2h/nba?external_id=${id}`
 };
 
-// --- ESTADO ---
-let currentTab  = 'upcoming';
-let allMatches  = { live: [], upcoming: [] };
-let statsCache  = {};
-let alertedIds  = new Set(JSON.parse(localStorage.getItem('alerted_v3') || '[]'));
-let countdown   = null;
+// =============================================
+// ESTADO GLOBAL
+// =============================================
+let currentTab = 'upcoming';
+let allMatches = { live: [], upcoming: [] };
+let statsCache = {};         // externalId → { avgA, avgB, formA, formB }
+let alertedIds = new Set(JSON.parse(localStorage.getItem('alerted_v3') || '[]'));
+let countdown  = null;
+let jugabetLinesCache = {};  // Caché de líneas inyectadas por la extensión
+
+// Escuchar mensajes de la Extensión (Puente Jugabet)
+window.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'JUGABET_SYNC') {
+    jugabetLinesCache = event.data.payload;
+    // Actualizar icono de sincronización en el header
+    const syncStatus = document.getElementById('sync-status');
+    if (syncStatus) {
+      syncStatus.innerHTML = '🟢 Sincronizado con Jugabet';
+      syncStatus.classList.add('sync-active');
+    }
+    // Re-renderizar para aplicar líneas automáticamente
+    renderTab();
+  }
+});
 
 // ============================================================
 // MÓDULO 2 — ALMACÉN DE LÍNEAS (localStorage)
@@ -221,6 +239,15 @@ function renderCard(match, isLive = false) {
   const proyeccion = isLive
     ? proyectarEnVivo(match)
     : proyectarPrePartido(avgA, avgB);
+
+  // AUTO-SYNC CON JUGABET
+  const matchKeyA = `${participantAName.toUpperCase()}_${participantBName.toUpperCase()}`;
+  const matchKeyB = `${participantBName.toUpperCase()}_${participantAName.toUpperCase()}`;
+  if (jugabetLinesCache[matchKeyA]) {
+    Lines.set(externalId, 'Jugabet (Auto)', jugabetLinesCache[matchKeyA]);
+  } else if (jugabetLinesCache[matchKeyB]) {
+    Lines.set(externalId, 'Jugabet (Auto)', jugabetLinesCache[matchKeyB]);
+  }
 
   // MÓDULO 2: líneas guardadas
   const todasLineas = Lines.getAll(externalId);

@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Jugabet Sync Bridge",
+  "version": "2.0",
+  "description": "Sincroniza cuotas de Jugabet con el Dashboard de Netlify.",
+  "permissions": [
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://jugabet.mx/*"],
+      "js": ["content_jugabet.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://*.netlify.app/*"
+      ],
+      "js": ["content_dashboard.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
